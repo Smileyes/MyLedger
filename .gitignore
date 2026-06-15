@@ -8,3 +8,4 @@ app/build/
 app/schemas/
 captures/
 externalNativeBuild/
+.codex-remote-attachments/
