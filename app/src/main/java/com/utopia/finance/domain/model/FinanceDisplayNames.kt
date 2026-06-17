@@ -31,7 +31,7 @@ fun AccountType.displayName(): String =
     when (this) {
         AccountType.CASH -> "现金"
         AccountType.BANK -> "银行卡"
-        AccountType.E_WALLET -> "支付账户"
+        AccountType.E_WALLET -> "支付宝"
         AccountType.WECHAT -> "微信"
         AccountType.U_CARD -> "U卡"
         AccountType.CREDIT -> "信用账户"

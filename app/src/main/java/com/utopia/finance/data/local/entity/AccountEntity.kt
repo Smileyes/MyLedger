@@ -19,6 +19,7 @@ data class AccountEntity(
     val role: AccountRole = AccountRole.AVAILABLE_CASH,
     val currency: CurrencyCode = CurrencyCode.CNY,
     val openingBalanceMinor: Long = 0,
+    val investmentQuantity: String = "",
     val billDay: Int? = null,
     val repaymentDay: Int? = null,
     val isArchived: Boolean = false,

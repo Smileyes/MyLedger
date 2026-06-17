@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface AccountRepository {
     fun observeAccounts(): Flow<List<AccountEntity>>
+    fun observeAllAccounts(): Flow<List<AccountEntity>>
     suspend fun getAccounts(): List<AccountEntity>
     suspend fun accountBalances(): Map<Long, Long>
     suspend fun correctAccountBalance(accountId: Long, currentBalanceMinor: Long)

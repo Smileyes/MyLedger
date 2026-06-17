@@ -63,7 +63,10 @@ object FinanceCalculator {
             investments.sumByCurrency { it.currency to it.totalCostMinor },
             investmentAccountAssets,
         )
-        val lendingReceivable = lending.sumByCurrency { it.currency to it.outstandingMinor }
+        val lendingReceivable = mergeAmountMaps(
+            lending.sumByCurrency { it.currency to it.outstandingMinor },
+            legacyLendingReceivable(transactions),
+        )
         val debtLiabilities = debts.sumByCurrency { debt ->
             debt.currency to debtLiabilityMinor(debt, asOfEpochDay)
         }
@@ -85,6 +88,16 @@ object FinanceCalculator {
         val billedCreditLiabilities = creditBills.sumByCurrency { it.currency to it.outstandingMinor }
         val creditLiabilities = mergeAmountMaps(unbilledCreditLiabilities, billedCreditLiabilities)
         val totalDebtLiabilities = mergeAmountMaps(debtLiabilities, creditLiabilities)
+        val totalAssets = mergeAmountMaps(
+            accountFunds,
+            investmentCosts,
+            lendingReceivable,
+        )
+        val cashPosition = mergeAmountMaps(
+            accountFunds,
+            lendingReceivable,
+            totalDebtLiabilities.mapValues { -it.value },
+        )
 
         val allCurrencies = CurrencyCode.entries.toSet()
         val netWorth = allCurrencies.associateWith { currency ->
@@ -101,6 +114,8 @@ object FinanceCalculator {
             creditBillLiabilityByCurrency = creditLiabilities.filterValues { it != 0L },
             debtLiabilityByCurrency = totalDebtLiabilities.filterValues { it != 0L },
             netWorthByCurrency = netWorth,
+            totalAssetByCurrency = totalAssets,
+            cashPositionByCurrency = cashPosition,
         )
     }
 }
@@ -131,6 +146,26 @@ private fun accountBalances(
         .groupBy({ currenciesByAccount[it.key] ?: CurrencyCode.CNY }, { it.value })
         .mapValues { entry -> entry.value.sum() }
 }
+
+private fun legacyLendingReceivable(transactions: List<TransactionRecord>): Map<CurrencyCode, Long> =
+    transactions
+        .asSequence()
+        .filter {
+            it.status == PendingStatus.CONFIRMED &&
+                it.lendingId == null &&
+                (it.type == TransactionType.LENDING_OUT || it.type == TransactionType.LENDING_REPAYMENT)
+        }
+        .groupBy { it.currency }
+        .mapValues { entry ->
+            entry.value.sumOf { transaction ->
+                when (transaction.type) {
+                    TransactionType.LENDING_OUT -> transaction.amountMinor
+                    TransactionType.LENDING_REPAYMENT -> -transaction.amountMinor
+                    else -> 0L
+                }
+            }.coerceAtLeast(0)
+        }
+        .filterValues { it != 0L }
 
 private fun mergeAmountMaps(vararg maps: Map<CurrencyCode, Long>): Map<CurrencyCode, Long> =
     CurrencyCode.entries.associateWith { currency ->

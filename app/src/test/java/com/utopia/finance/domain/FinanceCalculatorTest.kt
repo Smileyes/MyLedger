@@ -82,6 +82,29 @@ class FinanceCalculatorTest {
     }
 
     @Test
+    fun cashPositionAddsLendingReceivableAndSubtractsLiabilities() {
+        val summary = FinanceCalculator.summarize(
+            accounts = listOf(
+                AccountRecord(id = 1, openingBalanceMinor = -198_348, currency = CurrencyCode.CNY),
+                AccountRecord(id = 2, openingBalanceMinor = 4_037, currency = CurrencyCode.USD),
+            ),
+            transactions = emptyList(),
+            investments = listOf(InvestmentRecord(id = 1, totalCostMinor = 75_000, currency = CurrencyCode.USD)),
+            lending = listOf(LendingRecord(id = 1, outstandingMinor = 200_000, currency = CurrencyCode.CNY)),
+            debts = listOf(DebtRecord(id = 1, outstandingPrincipalMinor = 1_300, annualRateBps = 0, startedAtEpochDay = 1, currency = CurrencyCode.CNY)),
+            asOfEpochDay = 1,
+        )
+
+        assertEquals(1_652L, summary.totalAssetByCurrency[CurrencyCode.CNY])
+        assertEquals(79_037L, summary.totalAssetByCurrency[CurrencyCode.USD])
+        assertEquals(352L, summary.cashPositionByCurrency[CurrencyCode.CNY])
+        assertEquals(4_037L, summary.cashPositionByCurrency[CurrencyCode.USD])
+        assertEquals(75_000L, summary.investmentCostByCurrency[CurrencyCode.USD])
+        assertEquals(352L, summary.netWorthByCurrency[CurrencyCode.CNY])
+        assertEquals(79_037L, summary.netWorthByCurrency[CurrencyCode.USD])
+    }
+
+    @Test
     fun debtLiabilityIncludesSimpleAnnualInterest() {
         val debt = DebtRecord(
             id = 1,
@@ -99,7 +122,7 @@ class FinanceCalculatorTest {
         val summary = FinanceCalculator.summarize(
             accounts = listOf(AccountRecord(id = 1, openingBalanceMinor = 100_000, currency = CurrencyCode.CNY)),
             transactions = listOf(
-                TransactionRecord(1, 1, TransactionType.LENDING_OUT, 20_000, CurrencyCode.CNY, PendingStatus.CONFIRMED),
+                TransactionRecord(1, 1, TransactionType.LENDING_OUT, 20_000, CurrencyCode.CNY, PendingStatus.CONFIRMED, lendingId = 1),
             ),
             investments = emptyList(),
             lending = listOf(LendingRecord(id = 1, outstandingMinor = 20_000, currency = CurrencyCode.CNY)),
@@ -109,6 +132,24 @@ class FinanceCalculatorTest {
 
         assertEquals(80_000L, summary.accountFundsByCurrency[CurrencyCode.CNY])
         assertEquals(20_000L, summary.lendingReceivableByCurrency[CurrencyCode.CNY])
+        assertEquals(100_000L, summary.netWorthByCurrency[CurrencyCode.CNY])
+    }
+
+    @Test
+    fun legacyLendingOutWithoutLinkedReceivableDoesNotReduceNetWorth() {
+        val summary = FinanceCalculator.summarize(
+            accounts = listOf(AccountRecord(id = 1, openingBalanceMinor = 100_000, currency = CurrencyCode.CNY)),
+            transactions = listOf(
+                TransactionRecord(1, 1, TransactionType.LENDING_OUT, 120_000, CurrencyCode.CNY, PendingStatus.CONFIRMED),
+            ),
+            investments = emptyList(),
+            lending = emptyList(),
+            debts = emptyList(),
+            asOfEpochDay = 1,
+        )
+
+        assertEquals(-20_000L, summary.accountFundsByCurrency[CurrencyCode.CNY])
+        assertEquals(120_000L, summary.lendingReceivableByCurrency[CurrencyCode.CNY])
         assertEquals(100_000L, summary.netWorthByCurrency[CurrencyCode.CNY])
     }
 

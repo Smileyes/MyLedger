@@ -21,7 +21,7 @@ class FinanceDisplayNamesTest {
         assertEquals("RMB", CurrencyCode.CNY.displayName())
         assertEquals("USD", CurrencyCode.USD.displayName())
         assertEquals("BTC", CurrencyCode.BTC.displayName())
-        assertEquals("支付账户", AccountType.E_WALLET.displayName())
+        assertEquals("支付宝", AccountType.E_WALLET.displayName())
         assertEquals("微信", AccountType.WECHAT.displayName())
         assertEquals("U卡", AccountType.U_CARD.displayName())
         assertEquals("花呗", AccountType.HUABEI.displayName())

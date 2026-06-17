@@ -38,6 +38,7 @@ import kotlinx.coroutines.launch
 
 data class FinanceUiState(
     val accounts: List<AccountEntity> = emptyList(),
+    val allAccounts: List<AccountEntity> = emptyList(),
     val recentTransactions: List<TransactionEntity> = emptyList(),
     val pendingTransactions: List<TransactionEntity> = emptyList(),
     val incomeSources: List<IncomeSourceEntity> = emptyList(),
@@ -78,6 +79,11 @@ class FinanceViewModel(
             container.accountRepository.observeAccounts().collect { items ->
                 _uiState.update { it.copy(accounts = items) }
                 refreshSummary()
+            }
+        }
+        viewModelScope.launch {
+            container.accountRepository.observeAllAccounts().collect { items ->
+                _uiState.update { it.copy(allAccounts = items) }
             }
         }
         viewModelScope.launch {
@@ -185,6 +191,7 @@ class FinanceViewModel(
         role: AccountRole,
         currency: CurrencyCode,
         openingAmount: String,
+        investmentQuantity: String,
         billDay: Int?,
         repaymentDay: Int?,
     ) = launchBusy {
@@ -198,6 +205,7 @@ class FinanceViewModel(
                 role = finalRole,
                 currency = finalCurrency,
                 openingBalanceMinor = parseNonNegativeMinor(openingAmount, finalCurrency),
+                investmentQuantity = if (finalRole == AccountRole.INVESTMENT_ASSET) investmentQuantity.trim() else "",
                 billDay = if (finalRole == AccountRole.CREDIT_LIABILITY) requireBillDay(billDay, "账单日") else null,
                 repaymentDay = if (finalRole == AccountRole.CREDIT_LIABILITY) requireBillDay(repaymentDay, "还款日") else null,
             ),
@@ -210,6 +218,12 @@ class FinanceViewModel(
         container.accountRepository.correctAccountBalance(accountId, parseSignedMinor(currentBalance, account.currency))
         refreshSummary()
         "账户资产已修正"
+    }
+
+    fun deleteAccount(accountId: Long) = launchBusy {
+        container.accountRepository.archiveAccount(accountId)
+        refreshSummary()
+        "账户已删除"
     }
 
     fun updateCreditRepaymentDay(account: AccountEntity, repaymentDay: String) = launchBusy {
@@ -631,6 +645,12 @@ class FinanceViewModel(
     fun skipPending(transactionId: Long) = launchBusy {
         container.transactionRepository.skipPending(transactionId)
         "待办已跳过"
+    }
+
+    fun deleteTransaction(transactionId: Long) = launchBusy {
+        container.transactionRepository.deleteTransaction(transactionId)
+        refreshSummary()
+        "明细已删除"
     }
 
     suspend fun generateReport(periodType: ReportPeriodType, anchorDate: LocalDate): ReportBundle =

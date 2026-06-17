@@ -1,11 +1,16 @@
 package com.utopia.finance.ui
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -78,6 +83,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.utopia.finance.FinanceApplication
 import com.utopia.finance.data.local.entity.AccountEntity
 import com.utopia.finance.data.local.entity.CounterpartyEntity
@@ -134,6 +141,8 @@ fun FinanceApp() {
     var showNoteDialog by remember { mutableStateOf(false) }
     var editingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var editingAccount by remember { mutableStateOf<AccountEntity?>(null) }
+    var deletingTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
+    var deletingAccount by remember { mutableStateOf<AccountEntity?>(null) }
     var confirmingRepayment by remember { mutableStateOf<TransactionEntity?>(null) }
 
     LaunchedEffect(uiState.message) {
@@ -158,15 +167,11 @@ fun FinanceApp() {
                 MainTab.OVERVIEW -> FloatingActionButton(onClick = { showTransactionDialog = true }) {
                     Icon(Icons.Filled.Add, contentDescription = "添加明细")
                 }
-                MainTab.ASSETS -> FloatingActionButton(onClick = { showAccountDialog = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "添加账户")
-                }
-                MainTab.EXPENSES -> FloatingActionButton(onClick = { showTransactionDialog = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "添加支出")
-                }
                 MainTab.NOTES -> FloatingActionButton(onClick = { showNoteDialog = true }) {
                     Icon(Icons.Filled.Add, contentDescription = "添加笔记")
                 }
+                MainTab.ASSETS,
+                MainTab.EXPENSES,
                 MainTab.SETTINGS -> Unit
             }
         },
@@ -227,16 +232,18 @@ fun FinanceApp() {
                     },
                     onSkip = viewModel::skipPending,
                     onEdit = { editingTransaction = it },
+                    onDelete = { deletingTransaction = it },
                 )
                 MainTab.ASSETS -> AssetsScreen(
                     uiState = uiState,
                     onAddAccount = { showAccountDialog = true },
                     onEditAccount = { editingAccount = it },
+                    onDeleteAccount = { deletingAccount = it },
                 )
                 MainTab.EXPENSES -> ExpensesScreen(
                     uiState = uiState,
-                    onAddExpense = { showTransactionDialog = true },
                     onEdit = { editingTransaction = it },
+                    onDelete = { deletingTransaction = it },
                     onConfirm = { tx ->
                         if (tx.creditBillId != null) confirmingRepayment = tx else viewModel.confirmPending(tx.id)
                     },
@@ -256,8 +263,8 @@ fun FinanceApp() {
         AddAccountDialog(
             onDismiss = { showAccountDialog = false },
             accounts = uiState.accounts,
-            onSave = { name, type, parentAccountId, role, currency, opening, billDay, repaymentDay ->
-                viewModel.addAccount(name, type, parentAccountId, role, currency, opening, billDay, repaymentDay)
+            onSave = { name, type, parentAccountId, role, currency, opening, investmentQuantity, billDay, repaymentDay ->
+                viewModel.addAccount(name, type, parentAccountId, role, currency, opening, investmentQuantity, billDay, repaymentDay)
                 showAccountDialog = false
             },
         )
@@ -318,6 +325,32 @@ fun FinanceApp() {
                 viewModel.correctAccountBalance(account.id, value)
                 editingAccount = null
             },
+        )
+    }
+    deletingAccount?.let { account ->
+        DeleteConfirmationDialog(
+            title = "删除账户",
+            targetName = account.name,
+            message = "账户会从资产页和后续选择列表中隐藏，并不再计入总览统计；历史明细不会被清空。删除前需要验证指纹或锁屏凭据。",
+            onDismiss = { deletingAccount = null },
+            onVerifiedDelete = {
+                viewModel.deleteAccount(account.id)
+                deletingAccount = null
+            },
+            onAuthError = viewModel::showMessage,
+        )
+    }
+    deletingTransaction?.let { transaction ->
+        DeleteConfirmationDialog(
+            title = "删除明细",
+            targetName = "${transaction.type.displayName()} · ${formatAmount(transaction.currency, transaction.amountMinor)}",
+            message = "这条明细会被删除，并重新影响账户余额、借出、欠款或信用账单统计。删除前需要验证指纹或锁屏凭据。",
+            onDismiss = { deletingTransaction = null },
+            onVerifiedDelete = {
+                viewModel.deleteTransaction(transaction.id)
+                deletingTransaction = null
+            },
+            onAuthError = viewModel::showMessage,
         )
     }
     if (showInvestmentDialog) {
@@ -383,13 +416,8 @@ private fun OverviewScreen(
         item {
             val summary = uiState.summary
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val totalAssets = mergeAmountMaps(
-                    summary?.accountFundsByCurrency.orEmpty(),
-                    summary?.investmentCostByCurrency.orEmpty(),
-                    summary?.lendingReceivableByCurrency.orEmpty(),
-                )
-                SummaryCard("总资产", totalAssets, prominent = true)
-                SummaryCard("账户", summary?.accountFundsByCurrency.orEmpty())
+                SummaryCard("总资产", summary?.totalAssetByCurrency.orEmpty(), prominent = true)
+                SummaryCard("现金", summary?.cashPositionByCurrency.orEmpty())
                 SummaryCard("投资", summary?.investmentCostByCurrency.orEmpty(), onClick = onAddInvestment)
                 SummaryCard("借出", summary?.lendingReceivableByCurrency.orEmpty(), onClick = onAddTransaction)
                 SummaryCard("负债", summary?.debtLiabilityByCurrency.orEmpty(), onClick = onAddTransaction)
@@ -416,11 +444,18 @@ private fun SummaryCard(
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(
-                if (amounts.isEmpty()) formatAmount(CurrencyCode.CNY, 0) else amounts.entries.joinToString("  ") { formatAmount(it.key, it.value) },
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
+            Column(
+                modifier = Modifier.padding(top = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                displayAmountEntries(amounts).forEach { (currency, minor) ->
+                    Text(
+                        formatAmount(currency, minor),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
         }
     }
 }
@@ -433,6 +468,7 @@ private fun DetailsScreen(
     onConfirm: (TransactionEntity) -> Unit,
     onSkip: (Long) -> Unit,
     onEdit: (TransactionEntity) -> Unit,
+    onDelete: (TransactionEntity) -> Unit,
 ) {
     var selectedFilter by remember { mutableStateOf(DetailFilter.ALL) }
     val todos = uiState.pendingTransactions.filter { it.type.isFinancialTodoType() }
@@ -478,12 +514,13 @@ private fun DetailsScreen(
             items(todos, key = { it.id }) { tx ->
                 TransactionCard(
                     tx = tx,
-                    accounts = uiState.accounts,
+                    accounts = uiState.allAccounts.ifEmpty { uiState.accounts },
                     sources = uiState.incomeSources,
                     categories = uiState.expenseCategories,
                     counterparties = uiState.counterparties,
                     onConfirm = onConfirm,
                     onSkip = onSkip,
+                    onDelete = onDelete,
                 )
             }
             item {
@@ -499,7 +536,7 @@ private fun DetailsScreen(
             }
         }
         items(transactions, key = { it.id }) { tx ->
-            TransactionCard(tx, uiState.accounts, uiState.incomeSources, uiState.expenseCategories, uiState.counterparties, onConfirm, onSkip, onClick = { onEdit(tx) })
+            TransactionCard(tx, uiState.allAccounts.ifEmpty { uiState.accounts }, uiState.incomeSources, uiState.expenseCategories, uiState.counterparties, onConfirm, onSkip, onDelete = onDelete, onClick = { onEdit(tx) })
         }
     }
 }
@@ -513,6 +550,7 @@ private fun TransactionCard(
     counterparties: List<CounterpartyEntity>,
     onConfirm: (TransactionEntity) -> Unit,
     onSkip: (Long) -> Unit,
+    onDelete: ((TransactionEntity) -> Unit)? = null,
     onClick: (() -> Unit)? = null,
 ) {
     val account = accounts.firstOrNull { it.id == tx.accountId }?.name.orEmpty()
@@ -529,6 +567,15 @@ private fun TransactionCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { onConfirm(tx) }) { Text(tx.confirmLabel()) }
                 OutlinedButton(onClick = { onSkip(tx.id) }) { Text("跳过") }
+                onDelete?.let {
+                    TextButton(onClick = { it(tx) }) { Text("删除") }
+                }
+            }
+        } else if (onDelete != null) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { onDelete(tx) }) {
+                    Text("删除")
+                }
             }
         }
     }
@@ -539,6 +586,7 @@ private fun AssetsScreen(
     uiState: FinanceUiState,
     onAddAccount: () -> Unit,
     onEditAccount: (AccountEntity) -> Unit,
+    onDeleteAccount: (AccountEntity) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -581,7 +629,14 @@ private fun AssetsScreen(
             }
         }
         items(assetAccounts, key = { it.id }) { account ->
-            AccountRow(account, uiState.accounts, uiState.accountBalances, uiState, onEdit = { onEditAccount(account) })
+            AccountRow(
+                account = account,
+                accounts = uiState.allAccounts.ifEmpty { uiState.accounts },
+                balances = uiState.accountBalances,
+                uiState = uiState,
+                onEdit = { onEditAccount(account) },
+                onDelete = { onDeleteAccount(account) },
+            )
         }
     }
 }
@@ -593,6 +648,7 @@ private fun AccountRow(
     balances: Map<Long, Long>,
     uiState: FinanceUiState,
     onEdit: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val parentName = account.parentAccountId?.let { parentId -> accounts.firstOrNull { it.id == parentId }?.name }
     val prefix = if (parentName == null) "" else "$parentName / "
@@ -625,12 +681,24 @@ private fun AccountRow(
         Column(Modifier.weight(1f)) {
             Text("$prefix${account.name}")
             Text("${account.type.displayName()} · ${account.role.displayName()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (account.role.includeInInvestmentAssets() && account.investmentQuantity.isNotBlank()) {
+                Text(
+                    "数量 ${account.investmentQuantity}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(balanceLabel, style = MaterialTheme.typography.bodyMedium)
             if (account.role.includeInAccountFunds() || account.role.includeInInvestmentAssets()) {
-                TextButton(onClick = onEdit) {
-                    Text("修正")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onEdit) {
+                        Text("修正")
+                    }
+                    TextButton(onClick = onDelete) {
+                        Text("删除")
+                    }
                 }
             } else if (account.role.includeInCreditLiability()) {
                 Text(
@@ -638,6 +706,13 @@ private fun AccountRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                TextButton(onClick = onDelete) {
+                    Text("删除")
+                }
+            } else {
+                TextButton(onClick = onDelete) {
+                    Text("删除")
+                }
             }
         }
     }
@@ -646,8 +721,8 @@ private fun AccountRow(
 @Composable
 private fun ExpensesScreen(
     uiState: FinanceUiState,
-    onAddExpense: () -> Unit,
     onEdit: (TransactionEntity) -> Unit,
+    onDelete: (TransactionEntity) -> Unit,
     onConfirm: (TransactionEntity) -> Unit,
     onSkip: (Long) -> Unit,
 ) {
@@ -663,18 +738,7 @@ private fun ExpensesScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("支出记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Button(onClick = onAddExpense) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("新增支出")
-                }
-            }
+            Text("支出记录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         }
         item {
             Row(
@@ -703,7 +767,7 @@ private fun ExpensesScreen(
             }
         }
         items(expenseTransactions, key = { it.id }) { tx ->
-            TransactionCard(tx, uiState.accounts, uiState.incomeSources, uiState.expenseCategories, uiState.counterparties, onConfirm, onSkip, onClick = { onEdit(tx) })
+            TransactionCard(tx, uiState.allAccounts.ifEmpty { uiState.accounts }, uiState.incomeSources, uiState.expenseCategories, uiState.counterparties, onConfirm, onSkip, onDelete = onDelete, onClick = { onEdit(tx) })
         }
     }
 }
@@ -720,12 +784,12 @@ private fun SubscriptionScreen(
     ) {
         item { Text("待确认订阅支出", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) }
         items(uiState.pendingTransactions, key = { it.id }) { tx ->
-            TransactionCard(tx, uiState.accounts, uiState.incomeSources, uiState.expenseCategories, uiState.counterparties, onConfirm, onSkip)
+            TransactionCard(tx, uiState.allAccounts.ifEmpty { uiState.accounts }, uiState.incomeSources, uiState.expenseCategories, uiState.counterparties, onConfirm, onSkip)
         }
         item { Text("订阅计划", style = MaterialTheme.typography.titleMedium) }
         items(uiState.subscriptions, key = { it.id }) { item ->
             SectionCard(item.name) {
-                val account = uiState.accounts.firstOrNull { it.id == item.accountId }?.name.orEmpty()
+                val account = uiState.allAccounts.ifEmpty { uiState.accounts }.firstOrNull { it.id == item.accountId }?.name.orEmpty()
                 Text("$account · ${item.period.displayName()} · ${formatAmount(item.currency, item.amountMinor)}")
                 Text("下次应扣：${formatLocalDate(LocalDate.ofEpochDay(item.nextDueEpochDay))}")
                 if (item.description.isNotBlank()) Text(item.description)
@@ -1181,10 +1245,11 @@ private fun CreditAccountSettingsRow(
 private fun AddAccountDialog(
     accounts: List<AccountEntity>,
     onDismiss: () -> Unit,
-    onSave: (String, AccountType, Long?, AccountRole, CurrencyCode, String, Int?, Int?) -> Unit,
+    onSave: (String, AccountType, Long?, AccountRole, CurrencyCode, String, String, Int?, Int?) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
     var opening by remember { mutableStateOf("0") }
+    var investmentQuantity by remember { mutableStateOf("") }
     var type by remember { mutableStateOf(AccountType.BANK) }
     var role by remember { mutableStateOf(type.defaultRole()) }
     var parentAccount by remember { mutableStateOf<AccountEntity?>(null) }
@@ -1209,6 +1274,7 @@ private fun AddAccountDialog(
                 role,
                 currency,
                 opening,
+                investmentQuantity,
                 billDay.toIntOrNull(),
                 repaymentDay.toIntOrNull(),
             )
@@ -1221,7 +1287,16 @@ private fun AddAccountDialog(
         }
         EntityMenu("上级账户", parentAccount, parentOptions, { it.name }) { parentAccount = it }
         EnumMenu("币种", currency, CurrencyCode.entries, { it.displayName() }) { currency = it }
-        MoneyField(opening, { opening = it }, "初始余额")
+        MoneyField(opening, { opening = it }, if (role.includeInInvestmentAssets()) "投资成本" else "初始余额")
+        if (role.includeInInvestmentAssets()) {
+            OutlinedTextField(
+                value = investmentQuantity,
+                onValueChange = { investmentQuantity = it },
+                label = { Text("数量") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         if (role.includeInCreditLiability()) {
             OutlinedTextField(
                 value = billDay,
@@ -1275,6 +1350,46 @@ private fun ConfirmRepaymentDialog(
             Text(transaction.description, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+@Composable
+private fun DeleteConfirmationDialog(
+    title: String,
+    targetName: String,
+    message: String,
+    onDismiss: () -> Unit,
+    onVerifiedDelete: () -> Unit,
+    onAuthError: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(targetName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    authenticateForDestructiveAction(
+                        context = context,
+                        onSuccess = onVerifiedDelete,
+                        onError = onAuthError,
+                    )
+                },
+            ) {
+                Text("验证并删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
 }
 
 @Composable
@@ -1756,6 +1871,58 @@ private fun exportLocationLabel(uriString: String?): String {
     return "已选择：$path"
 }
 
+private fun authenticateForDestructiveAction(
+    context: Context,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit,
+) {
+    val activity = context.findFragmentActivity()
+    if (activity == null) {
+        onError("无法启动身份验证")
+        return
+    }
+    val authenticators = BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+    val canAuthenticate = BiometricManager.from(activity).canAuthenticate(authenticators)
+    if (canAuthenticate != BiometricManager.BIOMETRIC_SUCCESS) {
+        onError("当前设备未启用可用的指纹或锁屏凭据")
+        return
+    }
+    val prompt = BiometricPrompt(
+        activity,
+        ContextCompat.getMainExecutor(activity),
+        object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                super.onAuthenticationSucceeded(result)
+                onSuccess()
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                super.onAuthenticationError(errorCode, errString)
+                onError(errString.toString())
+            }
+
+            override fun onAuthenticationFailed() {
+                super.onAuthenticationFailed()
+                onError("验证失败，请重试")
+            }
+        },
+    )
+    prompt.authenticate(
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle("验证身份")
+            .setSubtitle("删除财务数据前需要确认是本人操作")
+            .setAllowedAuthenticators(authenticators)
+            .build(),
+    )
+}
+
+private tailrec fun Context.findFragmentActivity(): FragmentActivity? =
+    when (this) {
+        is FragmentActivity -> this
+        is ContextWrapper -> baseContext.findFragmentActivity()
+        else -> null
+    }
+
 private fun minorAsDecimal(value: Long): String {
     return minorAsDecimal(value, CurrencyCode.CNY)
 }
@@ -1780,6 +1947,12 @@ private fun formatTransactionAmount(transaction: TransactionEntity, accounts: Li
     return formatAmount(currency, transaction.amountMinor)
 }
 
+private fun displayAmountEntries(amounts: Map<CurrencyCode, Long>): List<Pair<CurrencyCode, Long>> {
+    if (amounts.isEmpty()) return listOf(CurrencyCode.CNY to 0L)
+    return CurrencyCode.entries
+        .mapNotNull { currency -> amounts[currency]?.let { currency to it } }
+}
+
 private fun AccountEntity.isDefaultBankPlaceholder(): Boolean =
     name == "银行卡" && type == AccountType.BANK && parentAccountId == null
 
@@ -1802,11 +1975,6 @@ private enum class DetailFilter(val label: String) {
             DEBT -> type == TransactionType.DEBT_IN || type == TransactionType.DEBT_REPAYMENT
         }
 }
-
-private fun mergeAmountMaps(vararg maps: Map<CurrencyCode, Long>): Map<CurrencyCode, Long> =
-    CurrencyCode.entries.associateWith { currency ->
-        maps.sumOf { it[currency] ?: 0L }
-    }.filterValues { it != 0L }
 
 private fun TransactionType.isFinancialTodoType(): Boolean =
     this == TransactionType.LENDING_REPAYMENT || this == TransactionType.DEBT_REPAYMENT

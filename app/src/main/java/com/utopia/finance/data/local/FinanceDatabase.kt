@@ -46,7 +46,7 @@ import com.utopia.finance.data.local.entity.TransactionEntity
         ExchangeRateEntity::class,
         EconomicNoteEntity::class,
     ],
-    version = 6,
+    version = 7,
 )
 @TypeConverters(Converters::class)
 abstract class FinanceDatabase : RoomDatabase() {
@@ -158,9 +158,15 @@ abstract class FinanceDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `accounts` ADD COLUMN `investmentQuantity` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun create(context: Context): FinanceDatabase =
             Room.databaseBuilder(context, FinanceDatabase::class.java, "personal-finance.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .fallbackToDestructiveMigration(false)
                 .build()
     }

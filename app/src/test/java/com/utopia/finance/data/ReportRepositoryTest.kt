@@ -56,6 +56,7 @@ class ReportRepositoryTest {
 
 private object FakeAccountRepository : AccountRepository {
     override fun observeAccounts(): Flow<List<AccountEntity>> = flowOf(emptyList())
+    override fun observeAllAccounts(): Flow<List<AccountEntity>> = flowOf(emptyList())
     override suspend fun getAccounts(): List<AccountEntity> = emptyList()
     override suspend fun accountBalances(): Map<Long, Long> = emptyMap()
     override suspend fun correctAccountBalance(accountId: Long, currentBalanceMinor: Long) = error("unused")

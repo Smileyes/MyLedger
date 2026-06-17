@@ -43,6 +43,9 @@ interface LendingDao {
 
     @Update
     suspend fun update(lending: LendingEntity)
+
+    @Query("DELETE FROM lending WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao
@@ -64,6 +67,9 @@ interface DebtDao {
 
     @Update
     suspend fun update(debt: DebtEntity)
+
+    @Query("DELETE FROM debts WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao

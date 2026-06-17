@@ -17,6 +17,7 @@ data class TransactionRecord(
     val currency: CurrencyCode,
     val status: PendingStatus,
     val creditBillId: Long? = null,
+    val lendingId: Long? = null,
 )
 
 data class InvestmentRecord(
@@ -55,5 +56,7 @@ data class AssetSummary(
     val lendingReceivableByCurrency: Map<CurrencyCode, Long>,
     val debtLiabilityByCurrency: Map<CurrencyCode, Long>,
     val netWorthByCurrency: Map<CurrencyCode, Long>,
+    val totalAssetByCurrency: Map<CurrencyCode, Long> = emptyMap(),
+    val cashPositionByCurrency: Map<CurrencyCode, Long> = emptyMap(),
     val creditBillLiabilityByCurrency: Map<CurrencyCode, Long> = emptyMap(),
 )

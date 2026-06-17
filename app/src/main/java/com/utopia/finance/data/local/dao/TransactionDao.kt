@@ -33,6 +33,9 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE status = 'PENDING' AND type = 'DEBT_REPAYMENT' AND debtId = :debtId LIMIT 1")
     suspend fun findPendingDebtRepayment(debtId: Long): TransactionEntity?
 
+    @Query("SELECT * FROM transactions WHERE status = 'PENDING' AND type = 'LENDING_REPAYMENT' AND lendingId = :lendingId LIMIT 1")
+    suspend fun findPendingLendingRepayment(lendingId: Long): TransactionEntity?
+
     @Query("SELECT * FROM transactions WHERE status = 'PENDING' AND type = 'DEBT_REPAYMENT' AND creditBillId = :creditBillId LIMIT 1")
     suspend fun findPendingCreditBillRepayment(creditBillId: Long): TransactionEntity?
 
@@ -53,4 +56,10 @@ interface TransactionDao {
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("DELETE FROM transactions WHERE lendingId = :lendingId")
+    suspend fun deleteByLendingId(lendingId: Long)
+
+    @Query("DELETE FROM transactions WHERE debtId = :debtId")
+    suspend fun deleteByDebtId(debtId: Long)
 }

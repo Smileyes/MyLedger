@@ -14,6 +14,9 @@ interface AccountDao {
     fun observeActive(): Flow<List<AccountEntity>>
 
     @Query("SELECT * FROM accounts ORDER BY COALESCE(parentAccountId, id), parentAccountId IS NOT NULL, sortOrder, name")
+    fun observeAll(): Flow<List<AccountEntity>>
+
+    @Query("SELECT * FROM accounts ORDER BY COALESCE(parentAccountId, id), parentAccountId IS NOT NULL, sortOrder, name")
     suspend fun getAll(): List<AccountEntity>
 
     @Query("SELECT * FROM accounts WHERE id = :id LIMIT 1")

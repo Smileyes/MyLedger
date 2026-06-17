@@ -55,6 +55,8 @@ class DefaultAccountRepository(
 ) : AccountRepository {
     override fun observeAccounts(): Flow<List<AccountEntity>> = accountDao.observeActive()
 
+    override fun observeAllAccounts(): Flow<List<AccountEntity>> = accountDao.observeAll()
+
     override suspend fun getAccounts(): List<AccountEntity> = accountDao.getAll()
 
     override suspend fun accountBalances(): Map<Long, Long> {
@@ -105,7 +107,16 @@ class DefaultAccountRepository(
                 )
             },
             transactions = transactionDao.getAll().map {
-                TransactionRecord(it.id, it.accountId, it.type, it.amountMinor, it.currency, it.status, it.creditBillId)
+                TransactionRecord(
+                    id = it.id,
+                    accountId = it.accountId,
+                    type = it.type,
+                    amountMinor = it.amountMinor,
+                    currency = it.currency,
+                    status = it.status,
+                    creditBillId = it.creditBillId,
+                    lendingId = it.lendingId,
+                )
             },
             investments = investmentDao.getAll().map {
                 InvestmentRecord(it.id, it.totalCostMinor, it.currency)
@@ -378,7 +389,217 @@ class DefaultTransactionRepository(
         transactionDao.updateStatus(id, PendingStatus.SKIPPED)
     }
 
-    override suspend fun deleteTransaction(id: Long) = transactionDao.delete(id)
+    override suspend fun deleteTransaction(id: Long) {
+        database.withTransaction {
+            val transaction = transactionDao.getById(id) ?: return@withTransaction
+            when (transaction.type) {
+                TransactionType.LENDING_OUT -> {
+                    val lendingId = transaction.lendingId
+                    if (lendingId == null) {
+                        transactionDao.delete(id)
+                    } else {
+                        transactionDao.deleteByLendingId(lendingId)
+                        lendingDao.delete(lendingId)
+                    }
+                }
+                TransactionType.LENDING_REPAYMENT -> {
+                    if (transaction.status == PendingStatus.CONFIRMED) {
+                        transaction.lendingId
+                            ?.let { lendingDao.getById(it) }
+                            ?.let { lending ->
+                                val updated = lending.copy(
+                                    repaidMinor = (lending.repaidMinor - transaction.amountMinor).coerceAtLeast(0),
+                                )
+                                lendingDao.update(updated)
+                                syncPendingLendingRepayment(
+                                    lending = updated,
+                                    accountId = transaction.accountId,
+                                    counterpartyId = transaction.counterpartyId,
+                                    occurredAtMillis = transaction.occurredAtMillis,
+                                )
+                            }
+                    }
+                    transactionDao.delete(id)
+                }
+                TransactionType.DEBT_IN -> {
+                    val debtId = transaction.debtId
+                    if (debtId == null) {
+                        transactionDao.delete(id)
+                    } else {
+                        transactionDao.deleteByDebtId(debtId)
+                        debtDao.delete(debtId)
+                    }
+                }
+                TransactionType.DEBT_REPAYMENT -> {
+                    if (transaction.status == PendingStatus.CONFIRMED) {
+                        transaction.creditBillId?.let { creditBillId ->
+                            creditBillDao.getById(creditBillId)?.let { bill ->
+                                val repaidMinor = (bill.repaidMinor - transaction.amountMinor).coerceAtLeast(0)
+                                val updated = bill.copy(
+                                    repaidMinor = repaidMinor,
+                                    status = when {
+                                        repaidMinor >= bill.amountMinor -> CreditBillStatus.PAID
+                                        repaidMinor > 0 -> CreditBillStatus.PARTIAL_PAID
+                                        else -> CreditBillStatus.UNPAID
+                                    },
+                                    updatedAtMillis = System.currentTimeMillis(),
+                                )
+                                creditBillDao.update(updated)
+                                syncPendingCreditBillRepayment(updated)
+                            }
+                        } ?: transaction.debtId
+                            ?.let { debtDao.getById(it) }
+                            ?.let { debt ->
+                                val updated = debt.copy(
+                                    repaidMinor = (debt.repaidMinor - transaction.amountMinor).coerceAtLeast(0),
+                                )
+                                debtDao.update(updated)
+                                syncPendingDebtRepayment(
+                                    debt = updated,
+                                    accountId = transaction.accountId,
+                                    counterpartyId = transaction.counterpartyId,
+                                    occurredAtMillis = transaction.occurredAtMillis,
+                                )
+                            }
+                    }
+                    transactionDao.delete(id)
+                }
+                TransactionType.EXPENSE -> {
+                    transaction.creditBillId?.let { creditBillId ->
+                        creditBillDao.getById(creditBillId)?.let { bill ->
+                            val amountMinor = (bill.amountMinor - transaction.amountMinor).coerceAtLeast(0)
+                            val repaidMinor = bill.repaidMinor.coerceAtMost(amountMinor)
+                            val updated = bill.copy(
+                                amountMinor = amountMinor,
+                                repaidMinor = repaidMinor,
+                                status = when {
+                                    amountMinor <= 0L || repaidMinor >= amountMinor -> CreditBillStatus.PAID
+                                    repaidMinor > 0 -> CreditBillStatus.PARTIAL_PAID
+                                    else -> CreditBillStatus.UNPAID
+                                },
+                                updatedAtMillis = System.currentTimeMillis(),
+                            )
+                            creditBillDao.update(updated)
+                            syncPendingCreditBillRepayment(updated)
+                        }
+                    }
+                    transactionDao.delete(id)
+                }
+                TransactionType.INCOME,
+                TransactionType.SUBSCRIPTION,
+                TransactionType.TRANSFER_OUT,
+                TransactionType.TRANSFER_IN -> transactionDao.delete(id)
+            }
+        }
+    }
+
+    private suspend fun syncPendingLendingRepayment(
+        lending: LendingEntity,
+        accountId: Long?,
+        counterpartyId: Long?,
+        occurredAtMillis: Long,
+    ) {
+        val pending = transactionDao.findPendingLendingRepayment(lending.id)
+        val outstandingMinor = (lending.principalMinor - lending.repaidMinor).coerceAtLeast(0)
+        if (outstandingMinor <= 0) {
+            pending?.let { transactionDao.delete(it.id) }
+            return
+        }
+        val updatedAtMillis = System.currentTimeMillis()
+        val base = pending ?: TransactionEntity(
+            accountId = accountId,
+            type = TransactionType.LENDING_REPAYMENT,
+            amountMinor = outstandingMinor,
+            currency = lending.currency,
+            status = PendingStatus.PENDING,
+            occurredAtMillis = occurredAtMillis,
+            description = lending.description.ifBlank { "待收回借出款" },
+            counterpartyId = counterpartyId ?: lending.counterpartyId,
+            lendingId = lending.id,
+        )
+        val next = base.copy(
+            accountId = base.accountId ?: accountId,
+            amountMinor = outstandingMinor,
+            currency = lending.currency,
+            status = PendingStatus.PENDING,
+            description = base.description.ifBlank { lending.description.ifBlank { "待收回借出款" } },
+            counterpartyId = base.counterpartyId ?: counterpartyId ?: lending.counterpartyId,
+            lendingId = lending.id,
+            updatedAtMillis = updatedAtMillis,
+        )
+        if (pending == null) transactionDao.insert(next) else transactionDao.update(next)
+    }
+
+    private suspend fun syncPendingDebtRepayment(
+        debt: DebtEntity,
+        accountId: Long?,
+        counterpartyId: Long?,
+        occurredAtMillis: Long,
+    ) {
+        val pending = transactionDao.findPendingDebtRepayment(debt.id)
+        val outstandingMinor = (debt.principalMinor - debt.repaidMinor).coerceAtLeast(0)
+        if (outstandingMinor <= 0) {
+            pending?.let { transactionDao.delete(it.id) }
+            return
+        }
+        val updatedAtMillis = System.currentTimeMillis()
+        val base = pending ?: TransactionEntity(
+            accountId = accountId,
+            type = TransactionType.DEBT_REPAYMENT,
+            amountMinor = outstandingMinor,
+            currency = debt.currency,
+            status = PendingStatus.PENDING,
+            occurredAtMillis = occurredAtMillis,
+            description = debt.description.ifBlank { "待偿还欠款" },
+            counterpartyId = counterpartyId ?: debt.counterpartyId,
+            debtId = debt.id,
+        )
+        val next = base.copy(
+            accountId = base.accountId ?: accountId,
+            amountMinor = outstandingMinor,
+            currency = debt.currency,
+            status = PendingStatus.PENDING,
+            description = base.description.ifBlank { debt.description.ifBlank { "待偿还欠款" } },
+            counterpartyId = base.counterpartyId ?: counterpartyId ?: debt.counterpartyId,
+            debtId = debt.id,
+            updatedAtMillis = updatedAtMillis,
+        )
+        if (pending == null) transactionDao.insert(next) else transactionDao.update(next)
+    }
+
+    private suspend fun syncPendingCreditBillRepayment(bill: CreditBillEntity) {
+        val pending = transactionDao.findPendingCreditBillRepayment(bill.id)
+        val outstandingMinor = (bill.amountMinor - bill.repaidMinor).coerceAtLeast(0)
+        if (outstandingMinor <= 0) {
+            pending?.let { transactionDao.delete(it.id) }
+            return
+        }
+        val updatedAtMillis = System.currentTimeMillis()
+        val dueMillis = LocalDate.ofEpochDay(bill.dueEpochDay)
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+        val base = pending ?: TransactionEntity(
+            accountId = null,
+            type = TransactionType.DEBT_REPAYMENT,
+            amountMinor = outstandingMinor,
+            currency = bill.currency,
+            status = PendingStatus.PENDING,
+            occurredAtMillis = dueMillis,
+            description = bill.description.ifBlank { "信用账单待还款" },
+            creditBillId = bill.id,
+        )
+        val next = base.copy(
+            amountMinor = outstandingMinor,
+            currency = bill.currency,
+            status = PendingStatus.PENDING,
+            occurredAtMillis = base.occurredAtMillis.takeIf { it > 0 } ?: dueMillis,
+            description = base.description.ifBlank { bill.description.ifBlank { "信用账单待还款" } },
+            creditBillId = bill.id,
+            updatedAtMillis = updatedAtMillis,
+        )
+        if (pending == null) transactionDao.insert(next) else transactionDao.update(next)
+    }
 
 }
 

@@ -71,11 +71,12 @@ afterEvaluate {
         dependsOn(syncDebugMainClassesForTest, syncDebugUnitTestClassesForTest)
         val mainDir = File(debugUnitTestWorkDir, "main")
         val testDir = File(debugUnitTestWorkDir, "test")
+        val androidPluginClasspath = classpath
         testClassesDirs = files(testDir)
         classpath = files(
             testDir,
             mainDir,
-            configurations.getByName("debugUnitTestRuntimeClasspath"),
+            androidPluginClasspath,
         )
     }
 }
@@ -136,6 +137,7 @@ dependencies {
     testImplementation(libs.androidx.room.testing)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.work.testing)
+    testImplementation(libs.robolectric)
 
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.espresso.core)
